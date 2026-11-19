@@ -2,17 +2,24 @@ name: RSI Crypto Alerts
 
 on:
   workflow_dispatch:
+    inputs:
+      initialize_state:
+        description: "Initialiser l'état si aucun artefact n'existe (premier lancement uniquement)"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: rsi-crypto-alerts
   cancel-in-progress: false
 
 jobs:
-  verify-cloud:
-    name: Vérification du bot dans le cloud
+  run-alerts:
+    name: Alertes RSI avec état persistant
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -44,18 +51,132 @@ jobs:
           import os
 
           required = ("TELEGRAM_TOKEN", "CHAT_ID")
-          missing = [name for name in required if not os.environ.get(name)]
+          missing = [
+              name for name in required
+              if not os.environ.get(name)
+          ]
 
           if missing:
               raise SystemExit(
                   "Secrets manquants : " + ", ".join(missing)
               )
 
-          print("Les deux secrets sont disponibles, sans affichage de leurs valeurs.")
+          print("Les deux secrets sont disponibles.")
           PY
 
-      - name: Vérifier les RSI sans envoyer de message
+      - name: Récupérer le dernier état sauvegardé
+        id: restore
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const { owner, repo } = context.repo;
+
+            const response = await github.rest.actions.listArtifactsForRepo({
+              owner,
+              repo,
+              name: "rsi-alert-state",
+              per_page: 100
+            });
+
+            const artifacts = response.data.artifacts
+              .filter(item =>
+                item.name === "rsi-alert-state" &&
+                item.workflow_run &&
+                item.workflow_run.head_branch === "main"
+              )
+              .sort((a, b) => b.id - a.id);
+
+            const latest = artifacts[0];
+
+            if (!latest) {
+              const initialize =
+                context.payload.inputs?.initialize_state === "true";
+
+              if (!initialize) {
+                throw new Error(
+                  "Aucun état disponible. Pour le premier lancement, " +
+                  "cocher l'option d'initialisation."
+                );
+              }
+
+              fs.mkdirSync("data", { recursive: true });
+              fs.writeFileSync("data/alert_state.json", "{}\n");
+              core.setOutput("downloaded", "false");
+              core.info("Premier lancement : état vide initialisé.");
+              return;
+            }
+
+            if (latest.expired) {
+              throw new Error(
+                "Le dernier état a expiré. Arrêt pour éviter " +
+                "une réinitialisation silencieuse de l'anti-spam."
+              );
+            }
+
+            const archive = await github.rest.actions.downloadArtifact({
+              owner,
+              repo,
+              artifact_id: latest.id,
+              archive_format: "zip"
+            });
+
+            fs.writeFileSync(
+              "rsi-state.zip",
+              Buffer.from(archive.data)
+            );
+
+            core.setOutput("downloaded", "true");
+            core.info(
+              `État récupéré depuis l'artefact ${latest.id}, ` +
+              `créé le ${latest.created_at}.`
+            );
+
+      - name: Extraire et valider l'état
+        env:
+          STATE_DOWNLOADED: ${{ steps.restore.outputs.downloaded }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          from src.alert_state import load_states
+
+          path = Path("data/alert_state.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+
+          if os.environ["STATE_DOWNLOADED"] == "true":
+              with ZipFile("rsi-state.zip") as archive:
+                  content = archive.read("alert_state.json")
+
+              path.write_bytes(content)
+
+          states = load_states()
+
+          print("État valide.")
+          for symbol, state in states.items():
+              print(f"{symbol} : {state.value}")
+          PY
+
+      - name: Vérifier les RSI et envoyer les alertes
+        id: bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python -m src.main --dry-run
+        run: python -m src.main
+
+      - name: Sauvegarder l'état anti-spam
+        if: >-
+          ${{
+            always() &&
+            (steps.bot.outcome == 'success' ||
+             steps.bot.outcome == 'failure') &&
+            hashFiles('data/alert_state.json') != ''
+          }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsi-alert-state
+          path: data/alert_state.json
+          if-no-files-found: error
+          retention-days: 30
