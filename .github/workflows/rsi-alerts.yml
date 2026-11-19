@@ -1,0 +1,61 @@
+name: RSI Crypto Alerts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rsi-crypto-alerts
+  cancel-in-progress: false
+
+jobs:
+  verify-cloud:
+    name: Vérification du bot dans le cloud
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Récupérer le projet
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: python -m pip install -r requirements.txt
+
+      - name: Exécuter les tests
+        run: python -m pytest -q
+
+      - name: Vérifier la présence des secrets
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+
+          required = ("TELEGRAM_TOKEN", "CHAT_ID")
+          missing = [name for name in required if not os.environ.get(name)]
+
+          if missing:
+              raise SystemExit(
+                  "Secrets manquants : " + ", ".join(missing)
+              )
+
+          print("Les deux secrets sont disponibles, sans affichage de leurs valeurs.")
+          PY
+
+      - name: Vérifier les RSI sans envoyer de message
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python -m src.main --dry-run
