@@ -2,6 +2,8 @@ import argparse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import requests
+
 from src.alert_state import (
     AlertState,
     classify_rsi,
@@ -135,6 +137,24 @@ def main() -> int:
     for symbol in SYMBOLS:
         try:
             check_symbol(symbol, states, args.dry_run)
+
+        except requests.HTTPError as error:
+            failed = True
+            response = error.response
+
+            print(
+                f"Erreur HTTP de la source de marché pour {symbol}."
+            )
+
+            if response is not None:
+                print(f"Code HTTP : {response.status_code}")
+                print(
+                    "Réponse du serveur : "
+                    f"{response.text[:1000]}"
+                )
+            else:
+                print("Aucune réponse HTTP disponible.")
+
         except Exception as error:
             failed = True
             print(
