@@ -1,6 +1,9 @@
 name: RSI Crypto Alerts
 
 on:
+  schedule:
+    - cron: "2-57/5 * * * *"
+
   workflow_dispatch:
     inputs:
       initialize_state:
@@ -91,19 +94,20 @@ jobs:
 
             if (!latest) {
               const initialize =
+                context.eventName === "workflow_dispatch" &&
                 context.payload.inputs?.initialize_state === "true";
 
               if (!initialize) {
                 throw new Error(
-                  "Aucun état disponible. Pour le premier lancement, " +
-                  "cocher l'option d'initialisation."
+                  "Aucun état disponible. Arrêt pour éviter " +
+                  "une réinitialisation silencieuse de l'anti-spam."
                 );
               }
 
               fs.mkdirSync("data", { recursive: true });
               fs.writeFileSync("data/alert_state.json", "{}\n");
               core.setOutput("downloaded", "false");
-              core.info("Premier lancement : état vide initialisé.");
+              core.info("État vide initialisé explicitement.");
               return;
             }
 
